@@ -1,0 +1,547 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Nov 29 19:19:10 2021
+
+@author: Ching-Chuan Tsong
+"""
+
+#111/01/12, 111/2/23, 111/08/03, 111/08/30
+
+"""
+#############################
+111/12/17
+pandas_datareader, 使用yfinance套件
+pip install yfinance==0.1.70. 注意: 不要安裝最新版!
+#============================#
+
+110/11/29
+(1)同時考慮多個ML分類器: Logit, GNB, MLPC, SVC 
+   台積電各種交易策略(參考PFF 15-6 Classification 交易成本)_1101113.py
+(2) features 標準化 (股價, return "d"等的rolling統計量) 
+    and train test sets split 
+    台積電各種交易策略(同時考慮DNN MLP Logit GNB分類器_1101125.py) 
+#############################
+"""
+
+######################
+#ch7
+#import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from pylab import mpl
+
+import random
+#import tensorflow as tf
+#from tensorflow.keras.models import Sequential
+#from tensorflow.keras.layers import Flatten, Dense, Dropout
+#from tensorflow.keras.optimizers import Adam
+#from tensorflow.keras.regularizers import l1, l2
+#from tensorflow.keras.callbacks import EarlyStopping
+
+#from sklearn.metrics import accuracy_score
+#from sklearn.preprocessing import StandardScaler #標準化scaler
+#from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+
+#from sklearn.ensemble import BaggingClassifier
+#from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
+#from scikit_learn import KerasClassifier
+
+#機器學習, 考慮這三種classification方式預測漲跌
+from sklearn.linear_model import LogisticRegression 
+from sklearn.naive_bayes import GaussianNB
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score
+
+#import pandas_datareader.data as web #抓股票資料
+#import yfinance as yf #抓股票資料 pip install yfinance==0.1.70. 注意: 不要安裝最新版!
+from datetime import datetime
+
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
+#import warnings #忽略warnings  111/12/11 for python 3.9
+#####################
+
+#=============================#
+
+sns.set() #seaborn預設的組合風格
+#plt.style.use('seaborn')   #plt.style.available
+#mpl.rcParams['savefig.dpi'] = 300
+mpl.rcParams['font.family'] = 'serif'
+#pd.set_option('precision', 4) #小數點後四位
+
+#設定np列印格式. suppress=True:取消科學記數法
+#np.set_printoptions(suppress=True, precision=4) 
+#os.environ['PYTHONHASHSEED'] = '0' #設定seed, 以確保每次執行都可得同樣結果
+
+#設定np列印格式. suppress=True:取消科學記數法
+#對浮點數做設定
+np.set_printoptions(suppress=True,
+                    formatter={'float': lambda x: f'{x:6.3f}'}
+                    ) 
+
+# df設定列印格式
+#pd.set_option('display.precision', 2)
+
+#显示小数位数
+pd.set_option('display.float_format', lambda x: f'{x:6.3f}')
+
+#warnings.filterwarnings("ignore") #忽略warnings  111/12/11
+
+#设置全局随机种子
+#tf.set_random_seed(1234) #設定tensorflow seed. 與上述類似.
+#=============================#
+
+"""
+=============================
+Load data
+=============================
+"""
+"""
+#鴻海: 2317.TW 國泰金: 2882.TW  台灣50: 0050.TW
+start = datetime(2016, 1, 1)
+end = datetime(2021, 10, 28) 
+
+symbol = "2317.TW"
+
+############################
+#web.DataReader(): 111/12/17有問題!
+#data = web.DataReader(symbol, 'yahoo', start, end)[["Close"]] #df
+
+#111/12/17 OK!
+data = yf.download(symbol,
+                   start='2016-1-1',
+                   end='2021-10-28',
+                   progress=False)[["Close"]] #progress=False:省略當前進度
+############################
+
+
+data
+data.info() #1416 obs
+
+data.columns = [symbol] #更換column name
+data
+
+data.describe() #敘述統計量
+
+data.to_csv("多個ML分類器數據.csv")
+"""
+
+###############################
+
+"""
+###############
+讀取csv 數據
+###############
+"""
+
+data = pd.read_csv("多個ML分類器數據.csv", parse_dates=True, index_col=0)
+data.info()
+#============================================#
+
+#畫圖
+symbol = "2317.TW"
+data.plot(figsize=(10, 6))
+plt.title(f"Closing price for {symbol}", fontsize=24)
+plt.show()
+#=============================================#
+#=============================================#
+
+#===== 設定參數 ========#
+lags = 3
+ptc = 0.003
+#======================#
+
+#===================================#
+def add_lags(data, symbol, lags=3, window=20): #加入不同feature and lags
+     cols = []
+     df = data.copy()
+     df.dropna(inplace=True)
+     df['r'] = np.log(df[symbol] / df[symbol].shift(1)) #return
+     df['sma'] = df[symbol].rolling(window).mean() #股價rolling
+     df['min'] = df[symbol].rolling(window).min()
+     df['max'] = df[symbol].rolling(window).max()
+     df['mom'] = df['r'].rolling(window).mean() #return rolling mean
+     df['vol'] = df['r'].rolling(window).std() #return rolling std
+     df.dropna(inplace=True)
+     df['d'] = np.where(df['r'] > 0, 1, 0) #漲為1, 否則為0
+     
+     features = [symbol, 'r', 'd', 'sma', 'min', 'max', 'mom', 'vol']
+     
+     for f in features:
+         for lag in range(1, lags+1):
+             col = f"{f}_lag_{lag}"
+             df[col] = df[f].shift(lag) #每個feature取lag1~lag5
+             cols.append(col)
+             
+     df.dropna(inplace=True)
+     
+     return df, cols
+#====================================#
+
+data, cols = add_lags(data, symbol, lags=lags)
+data.info()
+
+cols
+data.columns
+#==============================================#
+
+#設定seed
+def set_seeds(seed=100):
+    random.seed(seed)  #python內建seed
+    np.random.seed(seed)  
+    #tf.random.set_seed(seed)
+#=====================================#
+
+##train_scaled:每個column皆標準化; train:未標準化, 別忘了cols是feature columns
+def fit_model(train_scaled, train): #model.fit(X, y)
+    mfit = {model: models[model].fit(train_scaled[cols], train['d']) 
+            for model in models.keys()}
+                
+    return mfit
+#==============================================#
+
+#(4) 建立部位. 部位加入test df中!
+def derive_positions(test_scaled, test): 
+    for model in mfit.keys(): #mfit:以鍵取值
+        pred_class = models[model].predict(test_scaled[cols])
+        
+        #預測上漲pos=1, 否則pos=-1
+        test['pos_'+model] = np.where(pred_class==1, 1, -1)
+#===============================================#
+
+#(5) 計算這些策略return (考慮交易成本, 修改此procedure)
+#    #data:傳入test (有position與 test["r"]可以計算return)  
+def evaluate_strats(data):
+    global strate_cols, strate_ptc_cols
+    
+    strate_cols = []
+    strate_ptc_cols = []
+    
+    for model in mfit.keys():
+        col_name = 'strat_'+model
+        data[col_name] = data['pos_'+model] * data['r']
+        
+        col_ptc_name = 'strat_ptc_'+model
+                
+        ###########################
+        #考慮交易成本
+        data[col_ptc_name] = np.where(data['pos_'+model].diff()!= 0,                                   
+                               data[col_name]-2*ptc,
+                               data[col_name])
+        ###########################
+        
+        
+        strate_cols.append(col_name)
+        strate_ptc_cols.append(col_ptc_name)
+        
+    
+    strate_cols.insert(0, 'r')
+    strate_ptc_cols.insert(0, 'r')
+#==============================================#
+
+#110/12/21加入此proc, (train test split+normalization)
+def train_test_split(data, train_ratio=0.8):
+    
+    df = data.copy()
+               
+    split = int(len(df)*train_ratio)
+    train = df.iloc[:split].copy()
+    test = df.iloc[split:].copy()
+    mu = train[cols].mean() #features mean
+    std = train[cols].std()
+        
+    #Note: 只有feature要標準化, label則否!
+    train_scaled = (train[cols] - mu) / std #標準化
+    test_scaled = (test[cols] - mu) / std #用train set 標準化
+    
+    return train, test, train_scaled, test_scaled
+#==============================================#
+
+def risk_results(test, opt_strat): #111/08/31. test: test set, opt_strat:最佳策略
+    """maximum drawdown and VaR """
+    risk = test[[opt_strat]].cumsum().apply(np.exp) #df
+    risk["cummax"] = risk[opt_strat].cummax() #截至該時點累積return最大值
+    risk["drawdown"] = risk["cummax"] - risk[opt_strat]
+    max_drawdown = risk["drawdown"].max() #最大回撤
+    t_max = risk["drawdown"].idxmax() #最大回撤時點
+
+    """
+    ===========================
+    #return達到最大值的那些drawdown, 其值為0
+    #目的要找出最大回撤時間間格
+    ===========================
+    """
+
+    risk[["drawdown"]]
+    temp = risk[["drawdown"]].query('drawdown==0')
+    #temp
+
+    #時間間隔
+    #(temp.index[1:] - temp.index[:-1])
+
+    #加入最後一筆數據的date, 可以計算最後一個回撤的時間間格
+    last_df = pd.DataFrame({"drawdown": 0}, index=[risk.index[-1]])
+    #temp = temp.append(pd.DataFrame({"drawdown": 0}, index=[risk.index[-1]]))
+    temp = pd.concat([temp, last_df])
+    #temp
+
+    #回撤最大天數 maximum drawdown period
+    max_down_period = (temp.index[1:] - temp.index[:-1]).max()
+    #max_down_period
+
+    #========================================#
+    #要找出最大回撤期間起始與終止日期. 方法一: 111/12/13 筆方法二好
+    #參考:台積電各種交易策略2()_111113.py
+    down_period =  (temp.index[1:] - temp.index[:-1]) #類似差分
+    len(down_period)
+    down_period
+
+    pd.TimedeltaIndex(["0 days"])
+
+    #補上第一個entry為"0 days": 第一個回撤開始日期, 經過0 days. 
+    #放入列表, 再與原來down_period合併
+    [pd.TimedeltaIndex(["0 days"])[0]] + list(down_period)
+
+
+    down_period_df = temp.copy() #主要是要擷取drawdown=0的日期
+    down_period_df["down_period"] = [pd.TimedeltaIndex(["0 days"])[0]] + list(down_period) #所有回撤的天數(period)
+    down_period_df
+
+    end_max_down = down_period_df["down_period"].idxmax() #最大回撤終止日期
+    end_max_down
+
+    #最大回撤開始日期的index (down_period_df.index < end_max_down所有index最大那一個)
+    np.where(down_period_df.index < end_max_down)[0]
+    start_index_max_down = np.where(down_period_df.index < end_max_down)[0].max()
+    start_index_max_down
+
+    #最大回撤開始日期
+    down_period_df.iloc[[start_index_max_down]].index
+    start_max_down = down_period_df.iloc[[start_index_max_down]].index[0]
+    start_max_down
+
+    longest_down_start = str(start_max_down)[:10]
+    longest_down_start
+    longest_down_end = str(end_max_down)[:10]
+    longest_down_end
+    
+    print()
+    print(20*"=")
+    print(f"maximum drawdown = {max_drawdown:6.3f}")
+    print(f"maximum drawdown date = {str(t_max)[:10]}")
+    #先將days轉成str, 再取前8個chr
+    print(f"maximum drawdown period = {str(max_down_period)[:8]}")
+    print(f"from {longest_down_start} to {longest_down_end}")
+    print(20*"=")  
+#====================================================#
+
+    #畫圖
+    risk[[opt_strat, "cummax"]].plot(figsize=(10, 6))
+    plt.axvline(x=t_max, lw=2, c="m", ls="--")
+    plt.title(symbol, fontsize=24)
+
+    #陽春箭頭設定
+    arror_props1 = dict(color='red', arrowstyle='->', 
+                        lw=2, alpha=0.8)
+    #註釋text, 註釋座標, 
+    #xytext=(-100, 20): 文字相對於被註釋點xy, 左偏移100點, 上偏移20點.
+    #textcoords='offset points': 控制文字相對於被註釋點xy的偏移量（單位是點）
+    
+    #箭頭y的位置
+    arror_y_pos = (risk[opt_strat].max()+risk[opt_strat].min())/2
+    plt.annotate(str(t_max)[:10], xy=(str(t_max)[:10], arror_y_pos),
+                 xycoords='data',
+                 xytext=(-100, 20), textcoords='offset points', fontsize=12,
+                 arrowprops=arror_props1)
+
+    ############## 畫出最大回撤區間
+    Ix = pd.date_range(start=longest_down_start, end=longest_down_end)
+    Ix
+
+    y1 = risk[opt_strat].min()-0.01
+    y2 = risk[opt_strat].max()+0.01
+
+    plt.fill_between(Ix, y1=y1, y2=y2, color='m', alpha=0.2)
+    plt.ylim([y1, y2])
+    ##############
+
+    plt.show()
+    #=======================#
+    
+    #計算VaR
+    percs = [0.5, 1, 2.5, 5, 10] #percentiles (表示有0.5%的機率會賠超過VaR的值)
+
+    #Note: test[opt_strat]是採取"opt_strat"的每日return(不是累積return)
+    VaR = np.percentile(test[opt_strat], percs)
+    VaR
+
+    print()
+    print(20*"=")
+    print("probability   VaR")
+    print(20*"=")
+    for (perc, var) in zip(percs, VaR):
+        print(f"{perc:5.1f}%  {var:10.3f}")
+
+    print(20*"=")     
+#===================================#
+
+
+
+##########################################
+
+C=1 #regualization
+
+#設定多個分類器模型
+MLPC = MLPClassifier(solver='lbfgs', alpha=1e-5,
+                     hidden_layer_sizes=3 * [250],
+                     random_state=10, max_iter=500)
+
+models = {'logit': LogisticRegression(C=C),
+          'gauss_nb': GaussianNB(),
+          'mlp': MLPC,
+          'svm': SVC(C=C),           
+          }
+#===================================#
+
+#初始化seed
+set_seeds()
+data.info()
+
+#train test split與normalization
+train, test, train_scaled, test_scaled = train_test_split(data)
+
+train_scaled.info()#只含all lags(normed), train則還有股價, "r", "d", sma...
+train_scaled.mean()
+train_scaled.var()
+train.columns
+
+test_scaled.info()#只含all lags(normed)
+
+train.info()
+cols
+#train_scaled為標準化後features; train["d"]為label
+mfit = fit_model(train_scaled, train) 
+mfit
+mfit.keys()
+
+
+test_scaled[cols].columns
+
+#test_scaled:標準化後features, 用此預測, 計算部位
+#將計算得到的部位加到test df
+derive_positions(test_scaled, test)
+
+test.columns
+
+#利用test中的多個策略之position與 test["r"]計算策略報酬率
+evaluate_strats(test)
+
+test.columns
+
+strate_cols
+strate_ptc_cols
+
+test.to_csv("多個ML分類器與標準化test df.csv")
+
+
+##不考慮交易成本與考慮交易成本期末return
+test[strate_cols].sum().apply(np.exp)
+return_sum = test[strate_ptc_cols].sum().apply(np.exp)
+return_sum
+
+#最佳策略名稱, 因為要找出最佳模型的position
+opt_strat = return_sum.sort_values(ascending=False).index[0]
+opt_strat
+
+if opt_strat == "r": #若最佳策略是買進持有, 產生pos=1
+    opt_pos = "r_pos"
+    test[opt_pos] = 1
+else:       
+    opt_strat[10:] #取出第6以後字串
+    #最佳策略position
+    opt_pos = "pos_" + opt_strat[10:]
+    
+opt_pos #pos_gauss_nb
+test.columns
+
+#畫圖各期e^r(不考慮交易成本)
+ax = test[strate_cols].cumsum().apply(np.exp).plot(figsize=(10, 6))
+test[[opt_pos]].plot(ax=ax, secondary_y=opt_pos) #df
+plt.title(symbol+'  Test-Sample', fontsize=24)
+plt.show()
+
+#考慮交易成本
+ax = test[strate_ptc_cols].cumsum().apply(np.exp).plot(figsize=(10, 6))
+test[[opt_pos]].plot(ax=ax, secondary_y=opt_pos)
+plt.title(symbol+'  Test-Sample (ptc)', fontsize=24)
+plt.show()
+#==============================================#
+
+#最佳策略預測準確率是多少? 110/11/30
+
+test.columns
+
+#最佳策略的position
+opt_pos
+
+test["pred_d"] = np.where(test[opt_pos]==1, 1, 0)
+test["pred_d"]
+test["pred_d"].value_counts()
+
+#準確率
+(test["pred_d"]==test["d"]).sum()/len(test) #0.56
+
+#or
+from sklearn.metrics import accuracy_score
+
+accuracy_score(test["pred_d"], test["d"])
+
+
+true_pred_dict = {"true": test["d"],
+                  "pred": test["pred_d"],}
+true_pred_df = pd.DataFrame(true_pred_dict)
+true_pred_df
+
+#cross table
+table = pd.crosstab(true_pred_df["true"], true_pred_df["pred"])
+table
+table = table / len(true_pred_df)
+table
+
+table.plot(kind="bar", figsize=(10, 6),
+           edgecolor="k", lw=1, cmap="viridis", alpha=0.7, rot=0)
+plt.show()
+#===============================#
+
+#熱力圖110/12/21
+import seaborn as sns
+plt.subplots(figsize=(9, 9)) # 設定畫面大小
+
+#vmax,vmin, 图例中最大值和最小值的显示值. vmax=None
+sns.heatmap(table, annot=True, vmax=None, square=True, cmap="Blues")
+#plt.savefig('./BluesStateRelation.png')
+plt.show()
+#=======================================#
+
+#110/12/09
+from sklearn.metrics import confusion_matrix
+
+#or用confusion matrix計算後畫熱力圖
+c_matrix = confusion_matrix(test["d"], test["pred_d"]) / len(test)
+                            
+c_matrix
+
+sns.heatmap(c_matrix, annot=True, vmax=None, square=True, cmap="Blues")
+plt.xlabel("pred", fontsize=14)
+plt.ylabel("true", fontsize=14)
+plt.show()
+#====================================#
+
+#風險分析: 最大回撤, VaR
+test.columns
+opt_strat
+risk_results(test, opt_strat)
+#=====================================#
